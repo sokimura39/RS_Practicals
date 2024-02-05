@@ -1,0 +1,266 @@
+---
+title: "spectrums"
+author: "Soki Kimura"
+date: "2024-01-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## load libraries
+
+```{r load libraries}
+
+library(sf)
+library(terra)
+library(raster)
+library(tidyverse)
+library(cowplot)
+
+```
+
+
+## load data
+
+```{r load geometries}
+
+# load geometries
+grass <- st_read("../data/polygons/land_cover/grass_Polygon.shp") %>%
+  vect()
+forest <- st_read("../data/polygons/land_cover/forest_Polygon.shp") %>%
+  vect()
+urban <- st_read("../data/polygons/land_cover/urban_Polygon.shp") %>%
+  vect()
+high_urban <- st_read("../data/polygons/land_cover/high_ref_urban_Polygon.shp") %>%
+  vect()
+water <- st_read("../data/polygons/land_cover/water_Polygon.shp") %>%
+  vect()
+
+```
+
+```{r load satellite imagery}
+
+# sentinel
+sentinel <- terra::rast("../data/Landsat/NYC/NYC_subset/NYC_sentinel_msk.tif")
+
+# landsat
+landsat <- terra::rast("../data/Landsat/NYC/NYC_subset/NYC_landsat_mask.tif")
+
+# rename bands
+bands <- c("1", "2", "3", "4", "5", "6")
+names(sentinel) <- bands
+names(landsat) <- bands
+
+# set CRS
+landsat <- terra::project(landsat, sentinel)
+
+```
+
+## extract pixels from land use
+
+```{r define functions}
+
+band_fun <- function(sensor, landcover){
+  col_sensor <- deparse(substitute(sensor))
+  col_land <- deparse(substitute(landcover))
+  
+  sen_land <- terra::extract(sensor, landcover, progress = FALSE) %>%
+    as_tibble() %>%
+    pivot_longer(
+      cols = 2:7,
+      names_to = "bands",
+      values_to = "band_values"
+    ) %>%
+    add_column(sensor = col_sensor) %>%
+    add_column(land = col_land)
+}
+
+# for all values
+
+band_fun_all_values <- function(sensor, landcover){
+  col_sensor <- deparse(substitute(sensor))
+  col_land <- deparse(substitute(landcover))
+  
+  sen_land <- terra::extract(sensor, landcover, progress = FALSE) %>%
+    as_tibble() %>%
+    pivot_longer(
+      cols = 2:7,
+      names_to = "bands",
+      values_to = "band_values"
+    )
+}
+
+```
+
+
+
+
+```{r do the extraction}
+
+sen_forest <- band_fun(sentinel, forest)
+sen_grass <- band_fun(sentinel, grass)
+sen_high_urban <- band_fun(sentinel, high_urban)
+sen_urban <- band_fun(sentinel, urban)
+sen_water <- band_fun(sentinel, water)
+
+lsat_forest <- band_fun(landsat, forest)
+lsat_grass <- band_fun(landsat, grass)
+lsat_high_urban <- band_fun(landsat, high_urban)
+lsat_urban <- band_fun(landsat, urban)
+lsat_water <- band_fun(landsat, water)
+
+```
+
+
+## analyse bands
+
+```{r combine and summarise}
+
+# combine all rows
+all_data <- bind_rows(
+  sen_forest, sen_grass, sen_high_urban, sen_urban, sen_water,
+  lsat_forest, lsat_grass, lsat_high_urban, lsat_urban, lsat_water
+)
+
+# summarise
+summary <- all_data %>%
+  group_by(bands, sensor, land) %>%
+  summarise(Mean = mean(band_values), Std = sd(band_values))
+
+```
+
+
+
+```{r plot sentinel}
+
+# extract sentinel data
+sen_summary <- summary %>%
+  dplyr::filter(sensor == "sentinel")
+
+# spectral profiles
+p1 <- 
+  ggplot(
+    data = sen_summary,
+    aes(x = bands, y = Mean, col = land)
+  ) +
+  geom_point() +
+  geom_line(aes(group = land)) + 
+  geom_errorbar(
+    aes(ymin = (Mean - Std), ymax = (Mean + Std)),
+    width = 0.2
+  )
+
+# density plot
+p2 <- 
+  ggplot(
+    data = all_data %>% dplyr::filter(sensor == "sentinel"),
+    aes(x = band_values, group = land, fill = land)
+  ) +
+  geom_density(alpha = 0.6) +
+  geom_vline(
+    data = 
+      all_data %>%
+      dplyr::filter(sensor == "sentinel") %>%
+      group_by(land) %>% 
+      summarise(group_mean = mean(band_values)),
+    aes(xintercept = group_mean, color = land),
+    linetype = "dashed",
+    linewidth = 1)
+
+output_sen <- 
+  cowplot::plot_grid(
+    p1, p2, p2 + xlim(c(500, 5000)) + ylim(c(0, 0.003)),
+    labels = c("A", "B", "C"),
+    label_size = 12, 
+    ncol = 1
+  )
+
+```
+
+```{r plot landsat}
+
+# extract sentinel data
+sen_summary <- summary %>%
+  dplyr::filter(sensor == "landsat")
+
+# spectral profiles
+p3 <- 
+  ggplot(
+    data = sen_summary,
+    aes(x = bands, y = Mean, col = land)
+  ) +
+  geom_point() +
+  geom_line(aes(group = land)) + 
+  geom_errorbar(
+    aes(ymin = (Mean - Std), ymax = (Mean + Std)),
+    width = 0.2
+  )
+
+# density plot
+p4 <- 
+  ggplot(
+    data = all_data %>% dplyr::filter(sensor == "landsat"),
+    aes(x = band_values, group = land, fill = land)
+  ) +
+  geom_density(alpha = 0.6) +
+  geom_vline(
+    data = 
+      all_data %>%
+      dplyr::filter(sensor == "landsat") %>%
+      group_by(land) %>% 
+      summarise(group_mean = mean(band_values)),
+    aes(xintercept = group_mean, color = land),
+    linetype = "dashed",
+    linewidth = 1)
+
+output_lsat <- 
+  cowplot::plot_grid(
+    p3, p4, p4 + xlim(c(7000, 15000)) + ylim(c(0,0.001)),
+    labels = c("A", "B", "C"),
+    label_size = 12, 
+    ncol = 1
+  )
+
+```
+
+```{r save data}
+
+ggsave(
+  "img/sentinel_graph.png",
+  plot = output_sen,
+  width = 7,
+  height = 8
+)
+
+ggsave(
+  "img/landset_graph.png",
+  plot = output_lsat,
+  width = 7,
+  height = 8
+)
+
+```
+
+
+
+```{r save output for all}
+
+output_all <- 
+  cowplot::plot_grid(
+    output_sen, output_lsat,
+    labels = c("Sentinel", "Landsat"),
+    ncol = 2
+  )
+
+ggsave(
+  "img/allt_graph.png",
+  plot = output_all,
+  width = 15,
+  height = 8
+)
+
+
+```
+

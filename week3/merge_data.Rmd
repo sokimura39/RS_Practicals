@@ -1,0 +1,199 @@
+---
+title: "Merging Data"
+author: "Soki Kimura"
+date: "2024-01-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Merging multiple imagery
+
+Using the dataset for London from Landsat-8, I will join the 2 datasets together.
+
+
+```{r load_libraries}
+
+library(tidyverse)
+library(terra)
+library(fs)
+library(here)
+library(sf)
+library(GLCMTextures)
+
+```
+
+```{r load_data}
+# select first path
+list1_path <- dir_info(here::here("data", "Landsat", "London_merge", "LC08_L2SP_201024_20230915_20230925_02_T1")) %>%
+  dplyr::filter(str_detect(path, "[B1234567890].TIF")) %>%
+  dplyr::select(path) %>%
+  pull() %>%
+  as.character()
+
+# select second path
+list2_path <- dir_info(here::here("data", "Landsat", "London_merge", "LC08_L2SP_202024_20231125_20231129_02_T1")) %>%
+  dplyr::filter(str_detect(path, "[B1234567890].TIF")) %>%
+  dplyr::select(path) %>%
+  pull() %>%
+  as.character()
+
+# load data and reproject CRS
+list1 <- terra::rast(list1_path) # UTM zone 31N (EPSG:32631)
+list2 <- terra::rast(list2_path) # UTM zone 30N (EPSG:32630)
+
+# list1_reproject <- list1 %>%
+#   terra::project('EPSG:4326') 
+# list2_reproject <- list2 %>%
+#   terra::project('EPSG:4326')
+```
+
+
+The data come from different CRS (UTM zone 30N and 31N), so I reprojected one to the other, before creating the mosaic.
+
+```{r reproject_data}
+
+# reproject to the other one 
+list1_reproject <- list1 %>%
+  terra::project('EPSG:32630')
+
+list1_resample <- list1_reproject %>%
+  terra::resample(., list2)
+
+# mosaic
+m1 <- terra::mosaic(list1_resample, list2, fun = "mean")
+
+list1
+list1_reproject
+list2
+
+```
+
+Plotting the results as follows:
+
+```{r plot}
+plot(m1)
+
+# save as image
+writeRaster(m1, here::here("data", "Landsat", "London_merge", "mosaic.tif"))
+
+# view image
+terra::plotRGB(
+  m1,
+  r = 4, g = 3, b = 2
+)
+
+
+```
+
+
+```{r rename_layers}
+# rename layers
+names(m1) <- c("B1", "B2", "B3", "B4", "B5", "B6", "B7", "B10")
+names(m1)
+
+```
+
+## Data Enhancements
+
+### NDVI
+
+Now, I will calculate the NDVI (Normalised Difference Vegetation Index) Index for this area .
+
+The calculation is as follows:
+
+$$
+\text{NDVI} = \frac{\text{NIR}-\text{red}}{\text{NIR}+\text{red}}
+$$
+
+The NIR band is B5, and the red band is B4 in Landsat 8 imagery.
+
+```{r NDVI}
+
+m1_ndvi <-  (m1$B5 - m1$B4) / (m1$B5 + m1$B4)
+
+plot(m1_ndvi)
+
+```
+
+### Subsetting the raster
+
+In order to shorten the processing time, I will extract a single borough for the following analysis.
+
+```{r mask_raster}
+
+# get London Boroughs from London Datastore
+boroughs <- st_read("https://data.london.gov.uk/download/london_boroughs/9502cdec-5df0-46e3-8aa1-2b5c5233a31f/London_Boroughs.gpkg")
+
+# extract the London Borough of Camden
+camden <- boroughs %>%
+  dplyr::filter(name == "Camden") %>%
+  st_transform(., 32630)
+
+# crop using the geometry
+m1_camden <- m1 %>%
+  terra::crop(., camden) %>%
+  terra::mask(., camden)
+
+# save as image
+writeRaster(m1_camden, here::here("data", "Landsat", "London_merge", "m1_camden.tif"))
+
+```
+
+### Texture
+
+```{r texture}
+
+scale <- (m1_camden * 0.0000275) - 0.2
+
+# get texture
+textures1 <- glcm_textures(
+  scale$B4,
+  # size of window
+  w = c(7,7),
+  # bins
+  n_levels = 4,
+  quantization = "equal range",
+  shift = list(c(1, 0), c(1, 1), c(0, 1), c(-1, 1)),
+  metrics = "glcm_homogeneity"
+)
+
+# plot
+plot(textures1)
+
+# save as image
+writeRaster(textures1, here::here("data", "Landsat", "London_merge", "textures_camden.tif"))
+
+```
+
+
+I do not see much from this image here to be honest, maybe we should work wit hdata having better spatial resolution...
+
+![Texture of Camden](data/Landsat/London_merge/textures_camden.tif)
+
+### PCA
+
+Let's do some dimensionality reduction for the dataset we have.
+
+```{r PCA}
+
+# combine the data
+raster_and_texture <- c(m1_camden, textures1)
+
+# run pca analysis
+pca <- prcomp(
+  as.data.frame(raster_and_texture, na.rm = TRUE),
+  center = TRUE,
+  scale = TRUE
+)
+summary(pca)
+
+x <- predict(raster_and_texture, pca)
+
+plot(x)
+
+```
+
+

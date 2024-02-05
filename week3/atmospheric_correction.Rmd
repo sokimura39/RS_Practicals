@@ -1,0 +1,21 @@
+---
+title: "atmospheric_correction"
+author: "Soki Kimura"
+date: "2024-01-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Atmospheric Correction
+
+Using Level 1 Landsat data for Greater London, I have done the Dark Object Subtraction (DOS) to remove the effect of the atmosphere.
+
+```{r load libraries}
+
+
+
+```
+
